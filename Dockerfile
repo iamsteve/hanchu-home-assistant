@@ -11,8 +11,8 @@ RUN apt-get update && apt-get install -y \
     unzip \
     gnupg \
     xvfb \
-    chromium \
-    chromium-driver \
+    chromium=113.0.5672.63-1~deb11u1 \
+    chromium-driver=113.0.5672.63-1~deb11u1 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

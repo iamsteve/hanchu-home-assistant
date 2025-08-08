@@ -25,7 +25,6 @@ if not USERNAME or not PASSWORD or not LOGIN_URL:
     raise EnvironmentError("Missing required environment variables.")
 
 # Constants
-DATA_FILE = 'readable_span_contents.txt'
 FETCH_INTERVAL = 30  # seconds
 WATT_CONVERSION = 1000
 DIVISOR = 120
@@ -33,19 +32,20 @@ DIVISOR = 120
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
+# In-memory data store
+latest_data = {}
+data_lock = threading.Lock()
+
 # FastAPI setup
 app = FastAPI()
-data_lock = threading.Lock()
 
 @app.get("/api/data")
 def get_data():
     with data_lock:
-        try:
-            with open(DATA_FILE, 'r') as f:
-                return JSONResponse(content=json.load(f))
-        except Exception as e:
-            logging.error(f"Failed to read data: {e}")
-            return JSONResponse(content={"error": "Failed to fetch data"}, status_code=500)
+        if latest_data:
+            return JSONResponse(content=latest_data)
+        else:
+            return JSONResponse(content={"error": "Data not available yet"}, status_code=503)
 
 def create_driver():
     options = Options()
@@ -75,18 +75,25 @@ def extract_float(text):
     except ValueError:
         return 0.0
 
-def truncate_decimal(value):
-    value_str = f"{value:.10f}"
-    for i, char in enumerate(value_str):
-        if char != '0' and char != '.':
-            return value_str[:i+3]
-    return "0.000"
+def format_decimal(value):
+    """Formats a float to a string with 5 decimal places, handling the zero case."""
+    if value == 0.0:
+        return "0.000"
+    return f"{value:.5f}"
 
 def fetch_data(driver):
     wait = WebDriverWait(driver, 10)
 
     scene = wait.until(EC.presence_of_element_located((By.CLASS_NAME, "scene")))
     spans = scene.find_elements(By.TAG_NAME, "span")
+
+    # A check to ensure we have enough spans, to avoid IndexError
+    if len(spans) < 8:
+        span_texts = [s.text for s in spans]
+        logging.error(f"Expected at least 8 span elements, but found {len(spans)}. Content: {span_texts}")
+        # The code will raise an IndexError below, which is handled by the main loop's retry mechanism.
+        # This is better than silently failing or processing incorrect data.
+
     stream_images = scene.find_elements(By.CLASS_NAME, "stream-img")
 
     bat_status = scene.find_element(By.CLASS_NAME, "bat-status").text
@@ -124,20 +131,20 @@ def fetch_data(driver):
     convert = lambda x: (x / DIVISOR) / unit_multiplier
 
     result = {
-        'solar_production': truncate_decimal(convert(solar)),
-        'home_usage': truncate_decimal(convert(home)),
+        'solar_production': format_decimal(convert(solar)),
+        'home_usage': format_decimal(convert(home)),
         'grid_status': grid_status,
-        'grid_usage': truncate_decimal(convert(grid_usage)),
-        'grid_production': truncate_decimal(convert(grid_production)),
-        'battery_export': truncate_decimal(convert(battery_export)),
-        'battery_import': truncate_decimal(convert(battery_import)),
+        'grid_usage': format_decimal(convert(grid_usage)),
+        'grid_production': format_decimal(convert(grid_production)),
+        'battery_export': format_decimal(convert(battery_export)),
+        'battery_import': format_decimal(convert(battery_import)),
         'battery_status': bat_status,
         'battery_percentage': battery_percentage
     }
 
     with data_lock:
-        with open(DATA_FILE, 'w') as f:
-            json.dump(result, f, indent=4)
+        global latest_data
+        latest_data = result
 
     logging.info("Data fetched and saved.")
 
